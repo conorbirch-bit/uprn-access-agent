@@ -31,7 +31,7 @@ CONTACT_CONFIRMED = "Contact Confirmed"
 CONTACT_EMAIL = "Contact email"
 PRIMARY_PHONE = "Primary Contact Number"
 SECONDARY_PHONE = "Secondary Contact Number"
-OTHER_CONTACT_DETAILS = "other possible Contact Details"
+OTHER_CONTACT_DETAILS = "Other Possible Contact Details"
 NOTES = "Notes"
 
 REQUIRED_COLUMNS = {
