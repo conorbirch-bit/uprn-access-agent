@@ -40,7 +40,7 @@ st.set_page_config(
 @st.cache_resource(show_spinner="Reading access information…")
 def load_agent(source_key: str, file_bytes: bytes | None) -> UPRNAccessAgent:
     source = file_bytes if file_bytes is not None else DEFAULT_WORKBOOK
-    records = read_records(source)
+    records = read_records(source, sheet_name="sheet1")
     missing = validate_columns(records)
     if missing:
         raise ValueError("Missing required columns: " + ", ".join(missing))
