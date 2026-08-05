@@ -239,20 +239,32 @@ def create_summary(record: Mapping[str, str], risk: RiskAssessment) -> str:
         internal_bits.append(internal_description)
 
     contact_parts = []
+
     if present(record.get(CONTACT)):
         contact_parts.append(clean(record.get(CONTACT)))
+
     if present(record.get(CONTACT_EMAIL)):
         contact_parts.append(clean(record.get(CONTACT_EMAIL)))
+
     if present(record.get(PRIMARY_PHONE)):
         contact_parts.append(clean(record.get(PRIMARY_PHONE)))
+
     if present(record.get(SECONDARY_PHONE)):
-        contact_parts.append(f"backup: {clean(record.get(SECONDARY_PHONE))}")
+        contact_parts.append(
+            f"backup: {clean(record.get(SECONDARY_PHONE))}"
+        )
+
     if present(record.get(OTHER_CONTACT_DETAILS)):
-    contact_parts.append(
-        f"other possible contact details: "
-        f"{clean(record.get(OTHER_CONTACT_DETAILS))}"
+        contact_parts.append(
+            f"other possible contact details: "
+            f"{clean(record.get(OTHER_CONTACT_DETAILS))}"
+        )
+
+    contact_text = (
+        ", ".join(contact_parts)
+        if contact_parts
+        else "No contact details are recorded"
     )
-    contact_text = ", ".join(contact_parts) if contact_parts else "No contact details are recorded"
 
     notes = clean(record.get(NOTES))
     unit_text = f" The recorded property range is {unit_range}." if unit_range else ""
