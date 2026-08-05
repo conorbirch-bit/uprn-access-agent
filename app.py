@@ -73,19 +73,32 @@ with st.sidebar:
 try:
     if uploaded is not None:
         workbook_bytes = uploaded.getvalue()
-        agent = load_agent(f"upload:{uploaded.name}:{len(workbook_bytes)}", workbook_bytes)
+        workbook_hash = hashlib.sha256(workbook_bytes).hexdigest()
+
+        agent = load_agent(
+            f"upload:{workbook_hash}",
+            workbook_bytes,
+        )
+
     else:
-    if not DEFAULT_WORKBOOK.exists():
-        st.error("The default workbook could not be found. Upload an .xlsx file.")
-        st.stop()
+        if not DEFAULT_WORKBOOK.exists():
+            st.error(
+                "The default workbook could not be found. "
+                "Upload an .xlsx file."
+            )
+            st.stop()
 
-    workbook_bytes = DEFAULT_WORKBOOK.read_bytes()
-    workbook_hash = hashlib.sha256(workbook_bytes).hexdigest()
+        workbook_bytes = DEFAULT_WORKBOOK.read_bytes()
+        workbook_hash = hashlib.sha256(workbook_bytes).hexdigest()
 
-    agent = load_agent(
-        f"default:{workbook_hash}",
-        workbook_bytes,
-    )
+        agent = load_agent(
+            f"default:{workbook_hash}",
+            workbook_bytes,
+        )
+
+except Exception as exc:
+    st.error(f"The workbook could not be loaded: {exc}")
+    st.stop()
 except Exception as exc:
     st.error(f"The workbook could not be loaded: {exc}")
     st.stop()
