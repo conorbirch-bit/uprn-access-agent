@@ -1,7 +1,7 @@
 """Streamlit interface for the UPRN Building Access Agent."""
 
 from __future__ import annotations
-
+import hashlib
 from pathlib import Path
 import streamlit as st
 
@@ -75,10 +75,17 @@ try:
         workbook_bytes = uploaded.getvalue()
         agent = load_agent(f"upload:{uploaded.name}:{len(workbook_bytes)}", workbook_bytes)
     else:
-        if not DEFAULT_WORKBOOK.exists():
-            st.error("The default workbook could not be found. Upload an .xlsx file.")
-            st.stop()
-        agent = load_agent(str(DEFAULT_WORKBOOK), None)
+    if not DEFAULT_WORKBOOK.exists():
+        st.error("The default workbook could not be found. Upload an .xlsx file.")
+        st.stop()
+
+    workbook_bytes = DEFAULT_WORKBOOK.read_bytes()
+    workbook_hash = hashlib.sha256(workbook_bytes).hexdigest()
+
+    agent = load_agent(
+        f"default:{workbook_hash}",
+        workbook_bytes,
+    )
 except Exception as exc:
     st.error(f"The workbook could not be loaded: {exc}")
     st.stop()
