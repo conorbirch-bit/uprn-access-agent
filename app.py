@@ -147,12 +147,11 @@ if search_clicked or uprn:
                 st.write(f"**Name:** {yes_no(record.get(CONTACT, ''))}")
                 st.write(f"**Confirmed:** {yes_no(record.get(CONTACT_CONFIRMED, ''))}")
                 st.write(f"**Email:** {yes_no(record.get(CONTACT_EMAIL, ''))}")
-                st.write(f"**Other possible contact details:** "f"{yes_no(record.get(OTHER_CONTACT_DETAILS, ''))}"
-    )
+                
             with number_col:
                 st.write(f"**Primary number:** {yes_no(record.get(PRIMARY_PHONE, ''))}")
                 st.write(f"**Secondary number:** {yes_no(record.get(SECONDARY_PHONE, ''))}")
-
+                st.write(f"**Other possible contact details:** "f"{yes_no(record.get(OTHER_CONTACT_DETAILS, ''))}")
             st.markdown("### Risk reasoning")
             st.write(risk.explanation)
             st.write(
