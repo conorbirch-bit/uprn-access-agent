@@ -31,6 +31,7 @@ CONTACT_CONFIRMED = "Contact Confirmed"
 CONTACT_EMAIL = "Contact email"
 PRIMARY_PHONE = "Primary Contact Number"
 SECONDARY_PHONE = "Secondary Contact Number"
+OTHER_CONTACT_DETAILS = "other possible Contact Details"
 NOTES = "Notes"
 
 REQUIRED_COLUMNS = {
@@ -246,6 +247,11 @@ def create_summary(record: Mapping[str, str], risk: RiskAssessment) -> str:
         contact_parts.append(clean(record.get(PRIMARY_PHONE)))
     if present(record.get(SECONDARY_PHONE)):
         contact_parts.append(f"backup: {clean(record.get(SECONDARY_PHONE))}")
+    if present(record.get(OTHER_CONTACT_DETAILS)):
+    contact_parts.append(
+        f"other possible contact details: "
+        f"{clean(record.get(OTHER_CONTACT_DETAILS))}"
+    )
     contact_text = ", ".join(contact_parts) if contact_parts else "No contact details are recorded"
 
     notes = clean(record.get(NOTES))
