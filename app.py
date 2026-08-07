@@ -590,11 +590,11 @@ else:
             # EXISTING NOTES
             # -----------------------------
 
-            if record.get(NOTES):
+        if record.get(NOTES):
 
-                st.info(
-                    f"Notes: "
-                    f"{record.get(NOTES)}"
+            st.info(
+                f"Notes: "
+                f"{record.get(NOTES)}"
                 )
 
 
