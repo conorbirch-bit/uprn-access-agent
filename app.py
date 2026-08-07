@@ -107,6 +107,27 @@ def save_site_note(uprn: str, note: str) -> None:
                 note.strip(),
             ]
         )
+def load_site_notes(uprn: str) -> list[dict]:
+    if not SITE_NOTES_FILE.exists():
+        return []
+
+    with SITE_NOTES_FILE.open(
+        "r",
+        newline="",
+        encoding="utf-8",
+    ) as file:
+        reader = csv.DictReader(file)
+
+        notes = [
+            row
+            for row in reader
+            if row["UPRN"].strip().upper()
+            == uprn.strip().upper()
+        ]
+
+    # Newest notes first
+    return list(reversed(notes))
+
 # -----------------------------
 # PAGE HEADER
 # -----------------------------
@@ -484,31 +505,54 @@ if search_clicked or uprn:
                 key=note_key,
                 height=140,
             )
+
         if st.button(
             "💾 Save site note",
             key=f"save_note_{uprn_key}",
-            ):
+        ):
             if not note.strip():
                 st.warning(
-                    "There is no note to save."
-            )
+                "There is no note to save."
+                )
             else:
                 try:
                     save_site_note(
-                        uprn_key,
-                        note,
-                    )
+                    uprn_key,
+                    note,
+                )
 
                     st.success(
-                        "Site access note saved."
-                    )
+                    "Site access note saved."
+                )
 
                 except Exception as exc:
                     st.error(
-                        f"Could not save note: {exc}"
-                    )
+                    f"Could not save note: {exc}"
+                )
 
+# -----------------------------
+# PREVIOUS NOTES
+# -----------------------------
+st.markdown("### Previous site access notes")
 
+previous_notes = load_site_notes(uprn_key)
+
+if not previous_notes:
+    st.caption(
+        "No previous site access notes have been saved."
+    )
+
+else:
+    for saved_note in previous_notes:
+        st.markdown(
+            f"**{saved_note['Date Time']}**"
+        )
+
+        st.write(
+            saved_note["Site Access Note"]
+        )
+
+        st.divider()
             # -----------------------------
             # RISK REASONING
             # -----------------------------
