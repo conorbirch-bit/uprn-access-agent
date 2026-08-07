@@ -557,15 +557,15 @@ else:
             # RISK REASONING
             # -----------------------------
 
-            st.markdown(
+        st.markdown(
                 "### Risk reasoning"
             )
 
-            st.write(
+        st.write(
                 risk.explanation
             )
 
-            st.write(
+        st.write(
                 "**Internal controlled access required:** "
                 + (
                     "Yes"
@@ -574,7 +574,7 @@ else:
                 )
             )
 
-            st.write(
+        st.write(
                 "**Backup options recorded:** "
                 + (
                     ", ".join(
