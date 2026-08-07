@@ -212,19 +212,19 @@ if search_clicked or uprn:
         key=note_key,
         height=140,
     )
-            st.markdown("### Risk reasoning")
-            st.write(risk.explanation)
-            st.write(
-                "**Internal controlled access required:** "
-                + ("Yes" if risk.requires_internal_access else "No")
-            )
-            st.write(
-                "**Backup options recorded:** "
-                + (", ".join(risk.backup_options) if risk.backup_options else "None")
-            )
+        st.markdown("### Risk reasoning")
+        st.write(risk.explanation)
+        st.write(
+            "**Internal controlled access required:** "
+            + ("Yes" if risk.requires_internal_access else "No")
+        )
+        st.write(
+            "**Backup options recorded:** "
+            + (", ".join(risk.backup_options) if risk.backup_options else "None")
+        )
 
-            if record.get(NOTES):
-                st.info(f"Notes: {record.get(NOTES)}")
+        if record.get(NOTES):
+            st.info(f"Notes: {record.get(NOTES)}")
 
-            with st.expander("Show source row"):
-                st.json(dict(record))
+        with st.expander("Show source row"):
+            st.json(dict(record))
