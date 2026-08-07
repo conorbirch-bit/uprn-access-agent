@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import streamlit as st
+from voice_notes 
+import transcribe_audio
 
 from agent import (
     CONTACT,
@@ -165,6 +167,45 @@ if search_clicked or uprn:
                 st.write(f"**Primary number:** {yes_no(record.get(PRIMARY_PHONE, ''))}")
                 st.write(f"**Secondary number:** {yes_no(record.get(SECONDARY_PHONE, ''))}")
                 st.write(f"**Other possible contact details:** "f"{yes_no(record.get(OTHER_CONTACT_DETAILS, ''))}")
+
+            st.divider()
+st.subheader("🎤 Site access note")
+
+st.caption(
+    "Record any access issues encountered at this building."
+)
+
+audio = st.audio_input(
+    "Record access note",
+    key=f"audio_{uprn}",
+)
+
+if audio is not None:
+    st.audio(audio)
+
+    if st.button(
+        "Transcribe note",
+        key=f"transcribe_{uprn}",
+    ):
+        try:
+            with st.spinner("Transcribing voice note..."):
+                transcript = transcribe_audio(
+                    audio,
+                    st.secrets["OPENAI_API_KEY"],
+                )
+
+            st.session_state[f"note_{uprn}"] = transcript
+
+        except Exception as exc:
+            st.error(f"Transcription failed: {exc}")
+
+
+note = st.text_area(
+    "Review or edit note",
+    value=st.session_state.get(f"note_{uprn}", ""),
+    height=140,
+    key=f"note_box_{uprn}",
+)
             st.markdown("### Risk reasoning")
             st.write(risk.explanation)
             st.write(
