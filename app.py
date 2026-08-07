@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import csv
+from datetime import datetime
+
 import streamlit as st
 
 from Voice_notes import transcribe_audio
@@ -36,6 +39,7 @@ from xlsx_reader import read_records
 
 DEFAULT_WORKBOOK = Path(__file__).with_name("Access_Information.xlsx")
 
+SITE_NOTES_FILE = Path(__file__).with_name("site_notes.csv")
 
 st.set_page_config(
     page_title="UPRN Building Access Agent",
@@ -75,7 +79,34 @@ def load_agent(
 def yes_no(value: str) -> str:
     return value if value else "Not recorded"
 
+def save_site_note(uprn: str, note: str) -> None:
+    file_exists = SITE_NOTES_FILE.exists()
 
+    with SITE_NOTES_FILE.open(
+        "a",
+        newline="",
+        encoding="utf-8",
+    ) as file:
+        writer = csv.writer(file)
+
+        if not file_exists:
+            writer.writerow(
+                [
+                    "UPRN",
+                    "Date Time",
+                    "Site Access Note",
+                ]
+            )
+
+        writer.writerow(
+            [
+                uprn.strip().upper(),
+                datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                note.strip(),
+            ]
+        )
 # -----------------------------
 # PAGE HEADER
 # -----------------------------
@@ -453,6 +484,29 @@ if search_clicked or uprn:
                 key=note_key,
                 height=140,
             )
+        if st.button(
+            "💾 Save site note",
+            key=f"save_note_{uprn_key}",
+            ):
+        if not note.strip():
+            st.warning(
+                "There is no note to save."
+            )
+        else:
+            try:
+                save_site_note(
+                    uprn_key,
+                    note,
+                )
+
+                st.success(
+                    "Site access note saved."
+                )
+
+            except Exception as exc:
+                st.error(
+                    f"Could not save note: {exc}"
+                )
 
 
             # -----------------------------
