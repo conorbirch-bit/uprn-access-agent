@@ -169,49 +169,49 @@ if search_clicked or uprn:
 
             st.divider()
             st.divider()
-      st.subheader("🎤 Site access note")
+    st.subheader("🎤 Site access note")
 
-      st.caption(
-          "Record any access issues encountered at this building."
-      )
+    st.caption(
+        "Record any access issues encountered at this building."
+    )
 
-      uprn_key = uprn.strip().upper()
-      note_key = f"note_box_{uprn_key}"
+    uprn_key = uprn.strip().upper()
+    note_key = f"note_box_{uprn_key}"
 
-      # Initialise the editable note
-      if note_key not in st.session_state:
-          st.session_state[note_key] = ""
+    # Initialise the editable note
+    if note_key not in st.session_state:
+        st.session_state[note_key] = ""
 
-      audio = st.audio_input(
-          "Record access note",
-          key=f"audio_{uprn_key}",
-      )
+    audio = st.audio_input(
+        "Record access note",
+        key=f"audio_{uprn_key}",
+    )
 
-      if audio is not None:
-          st.audio(audio)
+    if audio is not None:
+        st.audio(audio)
 
-          if st.button(
-              "Transcribe note",
-              key=f"transcribe_{uprn_key}",
-          ):
-              try:
-                  with st.spinner("Transcribing voice note..."):
-                      transcript = transcribe_audio(
-                           audio,
-                          st.secrets["OPENAI_API_KEY"],
-                      )
+        if st.button(
+            "Transcribe note",
+            key=f"transcribe_{uprn_key}",
+        ):
+            try:
+                with st.spinner("Transcribing voice note..."):
+                    transcript = transcribe_audio(
+                        audio,
+                        st.secrets["OPENAI_API_KEY"],
+                    )
 
-                  # Put the transcript directly into the text-area state
-                  st.session_state[note_key] = transcript
+                # Put the transcript directly into the text-area state
+                st.session_state[note_key] = transcript
 
-              except Exception as exc:
-                  st.error(f"Transcription failed: {exc}")
+            except Exception as exc:
+                st.error(f"Transcription failed: {exc}")
 
-      note = st.text_area(
-          "Review or edit note",
-          key=note_key,
-          height=140,
-      )
+    note = st.text_area(
+        "Review or edit note",
+        key=note_key,
+        height=140,
+    )
             st.markdown("### Risk reasoning")
             st.write(risk.explanation)
             st.write(
