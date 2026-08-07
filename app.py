@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import streamlit as st
+from voice_notes 
+import transcribe_audio
 
 from agent import (
     CONTACT,
