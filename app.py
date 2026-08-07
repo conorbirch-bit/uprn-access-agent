@@ -1,9 +1,12 @@
 """Streamlit interface for the UPRN Building Access Agent."""
 
 from __future__ import annotations
+
 import hashlib
 from pathlib import Path
+
 import streamlit as st
+
 from Voice_notes import transcribe_audio
 
 from agent import (
@@ -27,9 +30,12 @@ from agent import (
     format_address,
     validate_columns,
 )
+
 from xlsx_reader import read_records
 
+
 DEFAULT_WORKBOOK = Path(__file__).with_name("Access_Information.xlsx")
+
 
 st.set_page_config(
     page_title="UPRN Building Access Agent",
@@ -39,12 +45,30 @@ st.set_page_config(
 
 
 @st.cache_resource(show_spinner="Reading access information…")
-def load_agent(source_key: str, file_bytes: bytes | None) -> UPRNAccessAgent:
-    source = file_bytes if file_bytes is not None else DEFAULT_WORKBOOK
-    records = read_records(source, sheet_name="sheet1")
+def load_agent(
+    source_key: str,
+    file_bytes: bytes | None,
+) -> UPRNAccessAgent:
+
+    source = (
+        file_bytes
+        if file_bytes is not None
+        else DEFAULT_WORKBOOK
+    )
+
+    records = read_records(
+        source,
+        sheet_name="sheet1",
+    )
+
     missing = validate_columns(records)
+
     if missing:
-        raise ValueError("Missing required columns: " + ", ".join(missing))
+        raise ValueError(
+            "Missing required columns: "
+            + ", ".join(missing)
+        )
+
     return UPRNAccessAgent(records)
 
 
@@ -52,29 +76,59 @@ def yes_no(value: str) -> str:
     return value if value else "Not recorded"
 
 
+# -----------------------------
+# PAGE HEADER
+# -----------------------------
+
 st.title("UPRN Building Access Agent")
+
 st.write(
-    "Enter a UPRN to receive a conversational summary of the building address, "
-    "access arrangements, contact details and access risk."
+    "Enter a UPRN to receive a conversational summary "
+    "of the building address, access arrangements, "
+    "contact details and access risk."
 )
 
+
+# -----------------------------
+# SIDEBAR
+# -----------------------------
+
 with st.sidebar:
+
     st.header("Data source")
-    uploaded = st.file_uploader("Use a different Excel workbook", type=["xlsx"])
-    st.caption(
-        "The included workbook is used automatically. Uploading another file does "
-        "not overwrite it."
-    )
-    st.divider()
-    st.markdown(
-        "**High risk rule**  \n"
-        "Internal controlled access is required **and** no backup option is recorded."
+
+    uploaded = st.file_uploader(
+        "Use a different Excel workbook",
+        type=["xlsx"],
     )
 
+    st.caption(
+        "The included workbook is used automatically. "
+        "Uploading another file does not overwrite it."
+    )
+
+    st.divider()
+
+    st.markdown(
+        "**High risk rule**  \n"
+        "Internal controlled access is required **and** "
+        "no backup option is recorded."
+    )
+
+
+# -----------------------------
+# LOAD WORKBOOK
+# -----------------------------
+
 try:
+
     if uploaded is not None:
+
         workbook_bytes = uploaded.getvalue()
-        workbook_hash = hashlib.sha256(workbook_bytes).hexdigest()
+
+        workbook_hash = hashlib.sha256(
+            workbook_bytes
+        ).hexdigest()
 
         agent = load_agent(
             f"upload:{workbook_hash}",
@@ -82,15 +136,21 @@ try:
         )
 
     else:
+
         if not DEFAULT_WORKBOOK.exists():
+
             st.error(
                 "The default workbook could not be found. "
                 "Upload an .xlsx file."
             )
+
             st.stop()
 
         workbook_bytes = DEFAULT_WORKBOOK.read_bytes()
-        workbook_hash = hashlib.sha256(workbook_bytes).hexdigest()
+
+        workbook_hash = hashlib.sha256(
+            workbook_bytes
+        ).hexdigest()
 
         agent = load_agent(
             f"default:{workbook_hash}",
@@ -98,133 +158,356 @@ try:
         )
 
 except Exception as exc:
-    st.error(f"The workbook could not be loaded: {exc}")
+
+    st.error(
+        f"The workbook could not be loaded: {exc}"
+    )
+
     st.stop()
-except Exception as exc:
-    st.error(f"The workbook could not be loaded: {exc}")
-    st.stop()
+
+
+# -----------------------------
+# UPRN SEARCH
+# -----------------------------
 
 uprn = st.text_input(
     "UPRN",
     placeholder="For example: ACTO0023",
     help="The lookup ignores spaces and letter case.",
 )
-search_clicked = st.button("Find building", type="primary", use_container_width=True)
+
+search_clicked = st.button(
+    "Find building",
+    type="primary",
+    use_container_width=True,
+)
+
+
+# -----------------------------
+# LOOKUP RESULT
+# -----------------------------
 
 if search_clicked or uprn:
+
     if not uprn.strip():
+
         st.warning("Enter a UPRN first.")
+
     else:
+
         result = agent.lookup(uprn)
+
         if result is None:
-            st.error(f"No building was found for UPRN ‘{uprn.strip()}’.")
+
+            st.error(
+                f"No building was found for UPRN "
+                f"‘{uprn.strip()}’."
+            )
+
             suggestions = agent.suggestions(uprn)
+
             if suggestions:
-                st.write("Closest recorded UPRNs: " + ", ".join(suggestions))
+
+                st.write(
+                    "Closest recorded UPRNs: "
+                    + ", ".join(suggestions)
+                )
+
         else:
+
             record = result.record
             risk = result.risk
 
-            if risk.level == "High":
-                st.error(f"Access risk: {risk.level}")
-            elif risk.level == "Medium":
-                st.warning(f"Access risk: {risk.level}")
-            else:
-                st.success(f"Access risk: {risk.level}")
 
-            st.markdown("### Conversational summary")
+            # -----------------------------
+            # ACCESS RISK
+            # -----------------------------
+
+            if risk.level == "High":
+
+                st.error(
+                    f"Access risk: {risk.level}"
+                )
+
+            elif risk.level == "Medium":
+
+                st.warning(
+                    f"Access risk: {risk.level}"
+                )
+
+            else:
+
+                st.success(
+                    f"Access risk: {risk.level}"
+                )
+
+
+            # -----------------------------
+            # SUMMARY
+            # -----------------------------
+
+            st.markdown(
+                "### Conversational summary"
+            )
+
             st.write(result.summary)
 
-            st.markdown("### Building")
-            st.write(f"**Address:** {format_address(record)}")
-            if record.get(NO_RANGE):
-                st.write(f"**Property range:** {record.get(NO_RANGE)}")
 
-            st.markdown("### Access details")
+            # -----------------------------
+            # BUILDING
+            # -----------------------------
+
+            st.markdown("### Building")
+
+            st.write(
+                f"**Address:** "
+                f"{format_address(record)}"
+            )
+
+            if record.get(NO_RANGE):
+
+                st.write(
+                    f"**Property range:** "
+                    f"{record.get(NO_RANGE)}"
+                )
+
+
+            # -----------------------------
+            # ACCESS
+            # -----------------------------
+
+            st.markdown(
+                "### Access details"
+            )
+
             external_col, internal_col = st.columns(2)
+
             with external_col:
+
                 st.markdown("**External**")
-                st.write(f"Trade button/intercom: {yes_no(record.get(EXTERNAL_ACCESS, ''))}")
-                st.write(f"Times/other information: {yes_no(record.get(EXTERNAL_DETAILS, ''))}")
-                st.write(f"Fire-brigade drop switch: {yes_no(record.get(DROP_SWITCH, ''))}")
-                st.write(f"External key type: {yes_no(record.get(EXTERNAL_KEY, ''))}")
+
+                st.write(
+                    "**Trade button/intercom:** "
+                    f"{yes_no(record.get(EXTERNAL_ACCESS, ''))}"
+                )
+
+                st.write(
+                    "**Times/other information:** "
+                    f"{yes_no(record.get(EXTERNAL_DETAILS, ''))}"
+                )
+
+                st.write(
+                    "**Fire-brigade drop switch:** "
+                    f"{yes_no(record.get(DROP_SWITCH, ''))}"
+                )
+
+                st.write(
+                    "**External key type:** "
+                    f"{yes_no(record.get(EXTERNAL_KEY, ''))}"
+                )
+
+
             with internal_col:
+
                 st.markdown("**Internal**")
-                st.write(f"Fob/key required: {yes_no(record.get(INTERNAL_KEY_REQUIRED, ''))}")
-                st.write(f"Key/fob type: {yes_no(record.get(INTERNAL_KEY_TYPE, ''))}")
-                st.write(f"Key code required: {yes_no(record.get(INTERNAL_CODE_REQUIRED, ''))}")
-                st.write(f"Description: {yes_no(record.get(INTERNAL_DESCRIPTION, ''))}")
+
+                st.write(
+                    "**Fob/key required:** "
+                    f"{yes_no(record.get(INTERNAL_KEY_REQUIRED, ''))}"
+                )
+
+                st.write(
+                    "**Key/fob type:** "
+                    f"{yes_no(record.get(INTERNAL_KEY_TYPE, ''))}"
+                )
+
+                st.write(
+                    "**Key code required:** "
+                    f"{yes_no(record.get(INTERNAL_CODE_REQUIRED, ''))}"
+                )
+
+                st.write(
+                    "**Description:** "
+                    f"{yes_no(record.get(INTERNAL_DESCRIPTION, ''))}"
+                )
+
+
+            # -----------------------------
+            # CONTACT DETAILS
+            # -----------------------------
 
             st.markdown("### Contact")
+
             contact_col, number_col = st.columns(2)
+
             with contact_col:
-                st.write(f"**Name:** {yes_no(record.get(CONTACT, ''))}")
-                st.write(f"**Confirmed:** {yes_no(record.get(CONTACT_CONFIRMED, ''))}")
-                st.write(f"**Email:** {yes_no(record.get(CONTACT_EMAIL, ''))}")
-                
+
+                st.write(
+                    "**Name:** "
+                    f"{yes_no(record.get(CONTACT, ''))}"
+                )
+
+                st.write(
+                    "**Confirmed:** "
+                    f"{yes_no(record.get(CONTACT_CONFIRMED, ''))}"
+                )
+
+                st.write(
+                    "**Email:** "
+                    f"{yes_no(record.get(CONTACT_EMAIL, ''))}"
+                )
+
+
             with number_col:
-                st.write(f"**Primary number:** {yes_no(record.get(PRIMARY_PHONE, ''))}")
-                st.write(f"**Secondary number:** {yes_no(record.get(SECONDARY_PHONE, ''))}")
-                st.write(f"**Other possible contact details:** "f"{yes_no(record.get(OTHER_CONTACT_DETAILS, ''))}")
+
+                st.write(
+                    "**Primary number:** "
+                    f"{yes_no(record.get(PRIMARY_PHONE, ''))}"
+                )
+
+                st.write(
+                    "**Secondary number:** "
+                    f"{yes_no(record.get(SECONDARY_PHONE, ''))}"
+                )
+
+                st.write(
+                    "**Other possible contact details:** "
+                    f"{yes_no(record.get(OTHER_CONTACT_DETAILS, ''))}"
+                )
+
+
+            # -----------------------------
+            # VOICE NOTE
+            # -----------------------------
 
             st.divider()
-            st.divider()
-    st.subheader("🎤 Site access note")
 
-    st.caption(
-        "Record any access issues encountered at this building."
-    )
+            st.subheader(
+                "🎤 Site access note"
+            )
 
-    uprn_key = uprn.strip().upper()
-    note_key = f"note_box_{uprn_key}"
+            st.caption(
+                "Record any access issues encountered "
+                "at this building."
+            )
 
-    # Initialise the editable note
-    if note_key not in st.session_state:
-        st.session_state[note_key] = ""
+            uprn_key = uprn.strip().upper()
 
-    audio = st.audio_input(
-        "Record access note",
-        key=f"audio_{uprn_key}",
-    )
+            note_key = (
+                f"note_box_{uprn_key}"
+            )
 
-    if audio is not None:
-        st.audio(audio)
+            if note_key not in st.session_state:
+                st.session_state[note_key] = ""
 
-        if st.button(
-            "Transcribe note",
-            key=f"transcribe_{uprn_key}",
-        ):
-            try:
-                with st.spinner("Transcribing voice note..."):
-                    transcript = transcribe_audio(
-                        audio,
-                        st.secrets["OPENAI_API_KEY"],
+
+            audio = st.audio_input(
+                "Record access note",
+                key=f"audio_{uprn_key}",
+            )
+
+
+            if audio is not None:
+
+                st.audio(audio)
+
+                if st.button(
+                    "Transcribe note",
+                    key=f"transcribe_{uprn_key}",
+                ):
+
+                    try:
+
+                        with st.spinner(
+                            "Transcribing voice note..."
+                        ):
+
+                            transcript = transcribe_audio(
+                                audio,
+                                st.secrets[
+                                    "OPENAI_API_KEY"
+                                ],
+                            )
+
+                        # Temporary debugging line.
+                        # This tells us what OpenAI returned.
+                        st.write(
+                            "Transcript received:",
+                            repr(transcript),
+                        )
+
+                        st.session_state[
+                            note_key
+                        ] = transcript
+
+                    except Exception as exc:
+
+                        st.error(
+                            "Transcription failed: "
+                            f"{exc}"
+                        )
+
+
+            note = st.text_area(
+                "Review or edit note",
+                key=note_key,
+                height=140,
+            )
+
+
+            # -----------------------------
+            # RISK REASONING
+            # -----------------------------
+
+            st.markdown(
+                "### Risk reasoning"
+            )
+
+            st.write(
+                risk.explanation
+            )
+
+            st.write(
+                "**Internal controlled access required:** "
+                + (
+                    "Yes"
+                    if risk.requires_internal_access
+                    else "No"
+                )
+            )
+
+            st.write(
+                "**Backup options recorded:** "
+                + (
+                    ", ".join(
+                        risk.backup_options
                     )
+                    if risk.backup_options
+                    else "None"
+                )
+            )
 
-                # Put the transcript directly into the text-area state
-                st.session_state[note_key] = transcript
 
-            except Exception as exc:
-                st.error(f"Transcription failed: {exc}")
+            # -----------------------------
+            # EXISTING NOTES
+            # -----------------------------
 
-    note = st.text_area(
-        "Review or edit note",
-        key=note_key,
-        height=140,
-    )
-        st.markdown("### Risk reasoning")
-        st.write(risk.explanation)
-        st.write(
-            "**Internal controlled access required:** "
-            + ("Yes" if risk.requires_internal_access else "No")
-        )
-        st.write(
-            "**Backup options recorded:** "
-            + (", ".join(risk.backup_options) if risk.backup_options else "None")
-        )
+            if record.get(NOTES):
 
-        if record.get(NOTES):
-            st.info(f"Notes: {record.get(NOTES)}")
+                st.info(
+                    f"Notes: "
+                    f"{record.get(NOTES)}"
+                )
 
-        with st.expander("Show source row"):
-            st.json(dict(record))
+
+            # -----------------------------
+            # DEBUG SOURCE DATA
+            # -----------------------------
+
+            with st.expander(
+                "Show source row"
+            ):
+
+                st.json(
+                    dict(record)
+                )
