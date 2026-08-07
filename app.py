@@ -530,73 +530,41 @@ if search_clicked or uprn:
                     f"Could not save note: {exc}"
                 )
 
-# -----------------------------
-# PREVIOUS NOTES
-# -----------------------------
-st.markdown("### Previous site access notes")
 
-previous_notes = load_site_notes(uprn_key)
-
-if not previous_notes:
-    st.caption(
-        "No previous site access notes have been saved."
-    )
-
-else:
-    for saved_note in previous_notes:
-        st.markdown(
-            f"**{saved_note['Date Time']}**"
-        )
-
-        st.write(
-            saved_note["Site Access Note"]
-        )
-
-        st.divider()
-            # -----------------------------
-            # RISK REASONING
-            # -----------------------------
-
-        st.markdown(
-                "### Risk reasoning"
-            )
-
-        st.write(
-                risk.explanation
-            )
-
-        st.write(
-                "**Internal controlled access required:** "
-                + (
-                    "Yes"
-                    if risk.requires_internal_access
-                    else "No"
+            st.markdown("### Previous site access notes")
+            
+            previous_notes = load_site_notes(uprn_key)
+            
+            if not previous_notes:
+                st.caption(
+                    "No previous site access notes have been saved."
                 )
-            )
-
-        st.write(
-                "**Backup options recorded:** "
-                + (
-                    ", ".join(
-                        risk.backup_options
+            
+            else:
+                for saved_note in previous_notes:
+                    st.markdown(
+                        f"**{saved_note['Date Time']}**"
                     )
-                    if risk.backup_options
-                    else "None"
-                )
-            )
-
-
-            # -----------------------------
-            # EXISTING NOTES
-            # -----------------------------
-
-        if record.get(NOTES):
-
-            st.info(
-                f"Notes: "
-                f"{record.get(NOTES)}"
-                )
-
+            
+                    st.write(
+                        saved_note["Site Access Note"]
+                    )
+            
+                    st.divider()
+            
+                    
+            
+                        # -----------------------------
+                        # EXISTING NOTES
+                        # -----------------------------
+            
+                    if record.get(NOTES):
+            
+                        st.info(
+                            f"Notes: "
+                            f"{record.get(NOTES)}"
+                            )
+            
 
             # -----------------------------
             # DEBUG SOURCE DATA
