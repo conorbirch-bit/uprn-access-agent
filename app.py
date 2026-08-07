@@ -169,6 +169,7 @@ if search_clicked or uprn:
                 st.write(f"**Other possible contact details:** "f"{yes_no(record.get(OTHER_CONTACT_DETAILS, ''))}")
 
             st.divider()
+st.divider()
 st.subheader("🎤 Site access note")
 
 st.caption(
@@ -198,7 +199,6 @@ if audio is not None:
 
         except Exception as exc:
             st.error(f"Transcription failed: {exc}")
-
 
 note = st.text_area(
     "Review or edit note",
