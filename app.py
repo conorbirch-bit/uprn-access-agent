@@ -488,25 +488,25 @@ if search_clicked or uprn:
             "💾 Save site note",
             key=f"save_note_{uprn_key}",
             ):
-        if not note.strip():
-            st.warning(
-                "There is no note to save."
+            if not note.strip():
+                st.warning(
+                    "There is no note to save."
             )
-        else:
-            try:
-                save_site_note(
-                    uprn_key,
-                    note,
-                )
+            else:
+                try:
+                    save_site_note(
+                        uprn_key,
+                        note,
+                    )
 
-                st.success(
-                    "Site access note saved."
-                )
+                    st.success(
+                        "Site access note saved."
+                    )
 
-            except Exception as exc:
-                st.error(
-                    f"Could not save note: {exc}"
-                )
+                except Exception as exc:
+                    st.error(
+                        f"Could not save note: {exc}"
+                    )
 
 
             # -----------------------------
