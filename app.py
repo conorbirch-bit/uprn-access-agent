@@ -88,63 +88,8 @@ def yes_no(value: str) -> str:
 
 
 
-def save_site_note(uprn: str, note: str):
-    """Append a site access note to the Excel workbook."""
-
-    ensure_notes_workbook()
-
-    workbook = load_workbook(SITE_NOTES_FILE)
-    sheet = workbook[SHEET_NAME]
-
-    sheet.append(
-        [
-            uprn.strip().upper(),
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            note.strip(),
-        ]
-    )
-
-    workbook.save(SITE_NOTES_FILE)
-    workbook.close()
 
 
-def load_site_notes(uprn: str) -> list[dict]:
-    """Return saved notes for a UPRN, newest first."""
-
-    if not SITE_NOTES_FILE.exists():
-        return []
-
-    workbook = load_workbook(
-        SITE_NOTES_FILE,
-        data_only=True,
-    )
-
-    sheet = workbook[SHEET_NAME]
-
-    requested_uprn = uprn.strip().upper()
-    notes = []
-
-    for row in sheet.iter_rows(
-        min_row=2,
-        values_only=True,
-    ):
-        saved_uprn, date_time, site_note = row
-
-        if saved_uprn is None:
-            continue
-
-        if str(saved_uprn).strip().upper() == requested_uprn:
-            notes.append(
-                {
-                    "UPRN": saved_uprn,
-                    "Date Time": date_time,
-                    "Site Access Note": site_note,
-                }
-            )
-
-    workbook.close()
-
-    return list(reversed(notes))
 
 # -----------------------------
 # PAGE HEADER
