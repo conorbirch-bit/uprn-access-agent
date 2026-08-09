@@ -530,6 +530,8 @@ if search_clicked or uprn:
             # DOWNLOAD SITE NOTES
             # -----------------------------
 
+            st.write("Notes file exists:", SITE_NOTES_FILE.exists())
+            st.write("Notes file path:", str(SITE_NOTES_FILE))
             if SITE_NOTES_FILE.exists():
                 excel_bytes = SITE_NOTES_FILE.read_bytes()
 
