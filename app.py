@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-import csv
 from datetime import datetime
 
 import streamlit as st
@@ -86,53 +85,62 @@ def load_agent(
 def yes_no(value: str) -> str:
     return value if value else "Not recorded"
 
-def save_site_note(uprn: str, note: str) -> None:
-    file_exists = SITE_NOTES_FILE.exists()
+def save_site_note(uprn: str, note: str):
+    """Append a site access note to the Excel workbook."""
 
-    with SITE_NOTES_FILE.open(
-        "a",
-        newline="",
-        encoding="utf-8",
-    ) as file:
-        writer = csv.writer(file)
+    ensure_notes_workbook()
 
-        if not file_exists:
-            writer.writerow(
-                [
-                    "UPRN",
-                    "Date Time",
-                    "Site Access Note",
-                ]
-            )
+    workbook = load_workbook(SITE_NOTES_FILE)
+    sheet = workbook[SHEET_NAME]
 
-        writer.writerow(
-            [
-                uprn.strip().upper(),
-                datetime.now().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-                note.strip(),
-            ]
-        )
+    sheet.append(
+        [
+            uprn.strip().upper(),
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            note.strip(),
+        ]
+    )
+
+    workbook.save(SITE_NOTES_FILE)
+    workbook.close()
+
+
 def load_site_notes(uprn: str) -> list[dict]:
+    """Return saved notes for a UPRN, newest first."""
+
     if not SITE_NOTES_FILE.exists():
         return []
 
-    with SITE_NOTES_FILE.open(
-        "r",
-        newline="",
-        encoding="utf-8",
-    ) as file:
-        reader = csv.DictReader(file)
+    workbook = load_workbook(
+        SITE_NOTES_FILE,
+        data_only=True,
+    )
 
-        notes = [
-            row
-            for row in reader
-            if row["UPRN"].strip().upper()
-            == uprn.strip().upper()
-        ]
+    sheet = workbook[SHEET_NAME]
 
-    # Newest notes first
+    requested_uprn = uprn.strip().upper()
+    notes = []
+
+    for row in sheet.iter_rows(
+        min_row=2,
+        values_only=True,
+    ):
+        saved_uprn, date_time, site_note = row
+
+        if saved_uprn is None:
+            continue
+
+        if str(saved_uprn).strip().upper() == requested_uprn:
+            notes.append(
+                {
+                    "UPRN": saved_uprn,
+                    "Date Time": date_time,
+                    "Site Access Note": site_note,
+                }
+            )
+
+    workbook.close()
+
     return list(reversed(notes))
 
 # -----------------------------
@@ -574,18 +582,16 @@ if search_clicked or uprn:
             # DOWNLOAD SITE NOTES
             # -----------------------------
 
-            if SITE_NOTES_FILE.exists():
-                with open(SITE_NOTES_FILE, "rb") as file:
-                    st.download_button(
-                        "⬇️ Download site notes spreadsheet",
-                        data=file,
-                        file_name="Site_Notes.xlsx",
-                        mime=(
-                            "application/vnd.openxmlformats-officedocument."
-                            "spreadsheetml.sheet"
-                        ),
-                    )
+           if SITE_NOTES_FILE.exists():
+                excel_bytes = SITE_NOTES_FILE.read_bytes()
 
+                st.download_button(
+                    "⬇️ Download site notes spreadsheet",
+                    data=excel_bytes,
+                    file_name="Site_Notes.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_notes_{uprn_key}",
+                )
             # -----------------------------
             # DEBUG SOURCE DATA
             # -----------------------------
