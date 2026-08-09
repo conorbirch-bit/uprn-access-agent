@@ -27,6 +27,7 @@ def ensure_notes_workbook():
     )
 
     workbook.save(SITE_NOTES_FILE)
+    workbook.close()
 
 
 def save_site_note(uprn: str, note: str):
@@ -46,9 +47,10 @@ def save_site_note(uprn: str, note: str):
     )
 
     workbook.save(SITE_NOTES_FILE)
+    workbook.close()
 
 
-def load_site_notes(uprn: str):
+def load_site_notes(uprn: str) -> list[dict]:
     """Return all saved notes for a UPRN, newest first."""
 
     ensure_notes_workbook()
@@ -61,7 +63,6 @@ def load_site_notes(uprn: str):
     sheet = workbook[SHEET_NAME]
 
     requested_uprn = uprn.strip().upper()
-
     notes = []
 
     for row in sheet.iter_rows(
@@ -81,5 +82,7 @@ def load_site_notes(uprn: str):
                     "Site Access Note": note,
                 }
             )
+
+    workbook.close()
 
     return list(reversed(notes))
