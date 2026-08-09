@@ -582,7 +582,7 @@ if search_clicked or uprn:
             # DOWNLOAD SITE NOTES
             # -----------------------------
 
-           if SITE_NOTES_FILE.exists():
+            if SITE_NOTES_FILE.exists():
                 excel_bytes = SITE_NOTES_FILE.read_bytes()
 
                 st.download_button(
