@@ -84,26 +84,7 @@ def load_agent(
 
 def yes_no(value: str) -> str:
     return value if value else "Not recorded"
-def ensure_notes_workbook():
-    """Create the Excel workbook if it does not already exist."""
 
-    if SITE_NOTES_FILE.exists():
-        return
-
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = SHEET_NAME
-
-    sheet.append(
-        [
-            "UPRN",
-            "Date Time",
-            "Site Access Note",
-        ]
-    )
-
-    workbook.save(SITE_NOTES_FILE)
-    workbook.close()
 
 
 def save_site_note(uprn: str, note: str):
