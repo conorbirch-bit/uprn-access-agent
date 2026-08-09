@@ -46,7 +46,7 @@ from xlsx_reader import read_records
 
 DEFAULT_WORKBOOK = Path(__file__).with_name("Access_Information.xlsx")
 
-SITE_NOTES_FILE = Path(__file__).with_name("site_notes.csv")
+SITE_NOTES_FILE = Path(__file__).with_name("Site_Notes.csv")
 
 st.set_page_config(
     page_title="UPRN Building Access Agent",
