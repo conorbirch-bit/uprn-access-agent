@@ -17,6 +17,8 @@ from note_storage import (
 
 from Voice_notes import transcribe_audio
 
+from note_storage import SITE_NOTES_FILE
+
 from agent import (
     CONTACT,
     CONTACT_CONFIRMED,
@@ -537,39 +539,52 @@ if search_clicked or uprn:
 
 
             st.markdown("### Previous site access notes")
-            
+
             previous_notes = load_site_notes(uprn_key)
-            
+
             if not previous_notes:
                 st.caption(
                     "No previous site access notes have been saved."
                 )
-            
+
             else:
                 for saved_note in previous_notes:
                     st.markdown(
                         f"**{saved_note['Date Time']}**"
                     )
-            
+
                     st.write(
                         saved_note["Site Access Note"]
                     )
-            
+
                     st.divider()
-            
-                    
-            
-                        # -----------------------------
-                        # EXISTING NOTES
-                        # -----------------------------
-            
-                    if record.get(NOTES):
-            
-                        st.info(
-                            f"Notes: "
-                            f"{record.get(NOTES)}"
-                            )
-            
+
+
+            # -----------------------------
+            # EXISTING NOTES
+            # -----------------------------
+
+            if record.get(NOTES):
+                st.info(
+                    f"Notes: {record.get(NOTES)}"
+                )
+
+
+            # -----------------------------
+            # DOWNLOAD SITE NOTES
+            # -----------------------------
+
+            if SITE_NOTES_FILE.exists():
+                with open(SITE_NOTES_FILE, "rb") as file:
+                    st.download_button(
+                        "⬇️ Download site notes spreadsheet",
+                        data=file,
+                        file_name="Site_Notes.xlsx",
+                        mime=(
+                            "application/vnd.openxmlformats-officedocument."
+                            "spreadsheetml.sheet"
+                        ),
+                    )
 
             # -----------------------------
             # DEBUG SOURCE DATA
