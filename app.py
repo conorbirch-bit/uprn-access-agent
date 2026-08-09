@@ -10,6 +10,11 @@ from datetime import datetime
 
 import streamlit as st
 
+from note_storage import (
+    load_site_notes,
+    save_site_note,
+)
+
 from Voice_notes import transcribe_audio
 
 from agent import (
