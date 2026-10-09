@@ -8,9 +8,11 @@ import re
 from difflib import SequenceMatcher
 
 import pandas as pd
+from google_routes import GoogleNoRouteError, GoogleRoutesError
 
 from coordinate_clustering import (
     NO_GOOGLE_RADIUS_KM,
+    GEOGRAPHIC_CLUSTER_MAX_DIAMETER_KM,
     estimate_local_transfer_minutes,
     haversine_km,
     should_bypass_google_between_sites,
@@ -32,13 +34,123 @@ SAME_ROAD_COORDINATE_FALLBACK_KM = 0.20
 GOOGLE_GROUPS_PER_DECISION = 8
 GOOGLE_FALLBACK_GROUPS_PER_DECISION = 2
 
-# Far strategic-cluster transition efficiency rule.
-#
-# Normal/local cluster changes are untouched. Only a move to a DIFFERENT
-# strategic cluster with >=30 minutes of travel must unlock at least twice as
-# much feasible remaining survey time as the travel required.
+# Every site-to-site move of >=30 minutes must unlock at least twice as much
+# feasible local survey time, including moves inside one strategic cluster.
 FAR_CLUSTER_TRANSITION_MINUTES = 30.0
 FAR_CLUSTER_MIN_SURVEY_TO_TRAVEL_RATIO = 2.0
+
+
+class CachedRunRouter:
+    """Reuse successful routing answers only for identical trips/times this run."""
+    def __init__(self, router):
+        self.router = router
+        self.routes = {}
+        self.matrix = {}
+
+    def __getattr__(self, name):
+        return getattr(self.router, name)
+
+    def compute_route(self, origin, destination, departure_time):
+        key = (origin, destination, departure_time.isoformat())
+        if key not in self.routes:
+            self.routes[key] = self.router.compute_route(origin, destination, departure_time)
+        return self.routes[key]
+
+    def one_to_many(self, origin, destinations, departure_time):
+        keys = [(origin, d, departure_time.isoformat()) for d in destinations]
+        missing = list(dict.fromkeys(key for key in keys if key not in self.matrix))
+        if missing:
+            values = self.router.one_to_many(origin, [key[1] for key in missing], departure_time)
+            if len(values) != len(missing):
+                raise GoogleRoutesError("Google returned an incomplete routing matrix.")
+            self.matrix.update(zip(missing, values))
+        return [self.matrix[key] for key in keys]
+
+
+def survey_clocks_for_date(day_date, first_survey_clock, latest_survey_clock,
+                           latest_return_clock, saturday_time_window=None):
+    """Use the optional Saturday window without changing weekday hours."""
+    if day_date.weekday() == 5 and saturday_time_window is not None:
+        return tuple(saturday_time_window)
+    return first_survey_clock, latest_survey_clock, latest_return_clock
+
+
+def _site_allowed_today(site, day_date):
+    # Saturday is an optional retry day, never a fresh-building working day.
+    if day_date.weekday() == 5 and not _is_retry_site(site):
+        return False
+    if _retry_forbidden_on_date(site, day_date):
+        return False
+    required = site.get("retry_required_weekdays") or []
+    if isinstance(required, str):
+        required = [value.strip() for value in required.split(",") if value.strip()]
+    if not isinstance(required, (list, tuple, set)):
+        required = []
+    if required and day_date.strftime("%A") not in required:
+        return False
+    preferred = site.get("special_request_date")
+    if preferred is not None and not pd.isna(preferred):
+        preferred = pd.to_datetime(preferred).date()
+        if day_date < preferred:
+            return False
+    return True
+
+
+def _is_retry_site(site):
+    return str(site.get("is_retry", False)).strip().lower() in {"true", "1", "1.0"}
+
+
+def _site_allowed_for_surveyor(site, surveyor_name):
+    original = str(site.get("retry_review_original_surveyor") or "").strip().casefold()
+    if original in {"nan", "none", "<na>"}:
+        original = ""
+    return not original or bool(surveyor_name and str(surveyor_name).strip().casefold() != original)
+
+
+def _requested_retry_day(site, day_date):
+    if not _is_retry_site(site):
+        return False
+    wanted = (_retry_preferred_weekdays(site.get("retry_preferred_weekdays"))
+              | _retry_preferred_weekdays(site.get("retry_required_weekdays")))
+    return day_date.strftime("%A").lower() in wanted and _site_allowed_today(site, day_date)
+
+
+def _day_area_workloads(sites, available_minutes, buffer_minutes):
+    """Cheap packing estimate for area selection, not a feasibility certificate."""
+    by_area = {}
+    for site in sites:
+        minutes = float(site["planning_minutes"])
+        if math.isfinite(minutes) and minutes > 0:
+            by_area.setdefault(_planning_cluster_key(site), []).append(minutes)
+    workloads = {}
+    for area, durations in by_area.items():
+        used = survey = 0.0
+        for duration in sorted(durations):
+            if used + duration + buffer_minutes <= available_minutes:
+                used += duration + buffer_minutes
+                survey += duration
+        workloads[area] = survey
+    return workloads
+
+
+def _local_work_candidates(anchor, sites):
+    """Keep a bounded geographic area around an anchor; retain missing-data fallback."""
+    result = []
+    for site in sites:
+        distance = haversine_km(anchor.get("latitude"), anchor.get("longitude"),
+                                site.get("latitude"), site.get("longitude"))
+        if ((distance is not None and distance <= GEOGRAPHIC_CLUSTER_MAX_DIAMETER_KM)
+                or (distance is None and _planning_cluster_key(site) == _planning_cluster_key(anchor))):
+            result.append(site)
+    return result
+
+# Retry scheduling preferences. The different-weekday rule is hard and is
+# enforced in build_week before any day routing. Morning/afternoon remains a
+# bounded soft preference so it cannot destroy an otherwise efficient route.
+RETRY_PERIOD_GROUP_RADIUS_KM = NO_GOOGLE_RADIUS_KM
+RETRY_PERIOD_MISMATCH_DISTANCE_PENALTY_KM = 0.50
+RETRY_PERIOD_MISMATCH_SCORE_PENALTY_MINUTES = 20.0
+RETRY_WEEKDAY_MISMATCH_SCORE_PENALTY_MINUTES = 15.0
 
 _ROAD_SUFFIX_CANONICAL = {
     "road":"road", "rd":"road", "street":"street", "st":"street",
@@ -167,6 +279,110 @@ def _far_cluster_transition_is_efficient(
         survey / travel
         >= float(minimum_ratio)
     )
+
+
+
+def _normalise_retry_period(value) -> str:
+    text = str(value or "").strip().lower()
+    if text == "morning":
+        return "morning"
+    if text == "afternoon":
+        return "afternoon"
+    return ""
+
+
+def _time_period_for_datetime(value: datetime) -> str:
+    return "morning" if int(value.hour) < 12 else "afternoon"
+
+
+def _retry_preferred_weekdays(value) -> set:
+    if value is None:
+        return set()
+    if isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = str(value).split(",")
+    valid = {
+        "monday", "tuesday", "wednesday", "thursday",
+        "friday", "saturday", "sunday",
+    }
+    return {
+        str(item).strip().lower()
+        for item in values
+        if str(item).strip().lower() in valid
+    }
+
+
+def _assign_retry_period_neighbourhood_preferences(
+    sites: List[dict],
+    radius_km: float = RETRY_PERIOD_GROUP_RADIUS_KM,
+) -> None:
+    """
+    Propagate a retry's morning/afternoon preference to nearby buildings so the
+    optimiser can move a coherent local group with the revisit instead of making
+    an isolated time-of-day detour.
+
+    This is deliberately sequencing-only and bounded to the existing local
+    no-Google radius (plus exact full-postcode matches). It can cross strategic
+    cluster boundaries because geographic proximity, not the cluster label, is
+    what matters for keeping the local route coherent.
+    """
+    anchors = []
+    for anchor in sites:
+        period = _normalise_retry_period(
+            anchor.get("retry_preferred_period")
+        )
+        if not period:
+            continue
+        anchors.append((anchor, period))
+
+    if not anchors:
+        return
+
+    for site in sites:
+        preferences = set()
+        for anchor, period in anchors:
+            same_postcode = False
+            try:
+                a_pc = re.sub(r"\s+", "", str(anchor.get("postcode", "")).upper())
+                s_pc = re.sub(r"\s+", "", str(site.get("postcode", "")).upper())
+                same_postcode = bool(a_pc) and a_pc == s_pc
+            except Exception:
+                same_postcode = False
+
+            distance = haversine_km(
+                anchor.get("latitude"),
+                anchor.get("longitude"),
+                site.get("latitude"),
+                site.get("longitude"),
+            )
+            nearby = (
+                distance is not None
+                and float(distance) <= float(radius_km)
+            )
+
+            if same_postcode or nearby:
+                preferences.add(period)
+
+        # Conflicting nearby retry anchors cancel out rather than forcing an
+        # arbitrary morning/afternoon choice onto the local area.
+        site["_retry_group_preferred_period"] = (
+            next(iter(preferences)) if len(preferences) == 1 else ""
+        )
+
+
+def _retry_forbidden_on_date(site: dict, day_date) -> bool:
+    value = site.get("retry_forbidden_weekday")
+    if value is None or value == "":
+        return False
+    try:
+        forbidden = int(float(value))
+    except Exception:
+        return False
+    try:
+        return int(day_date.weekday()) == forbidden
+    except Exception:
+        return False
 
 
 def _coordinate_edge_distance_km(
@@ -748,7 +964,9 @@ def _daily_route_sequence_ranks(
     Only ordering ranks are returned. No site is added, removed, made eligible
     or moved to another strategic cluster/day by this function.
     """
-    if not sites:
+    # Without a coordinate origin, a nearest-neighbour rank is only an index
+    # order. It must not outrank measured Google journey times.
+    if not sites or _site_coordinate(current_site or {}) is None:
         return {}, {}, {}
 
     current_cluster = _planning_cluster_key(
@@ -762,9 +980,10 @@ def _daily_route_sequence_ranks(
             idx
             for idx, site in enumerate(sites)
             if _planning_cluster_key(site) == current_cluster
+            and _site_coordinate(site) is not None
         ]
     else:
-        indices = list(range(len(sites)))
+        indices = [idx for idx, site in enumerate(sites) if _site_coordinate(site) is not None]
 
     if not indices:
         return {}, {}, {}
@@ -816,6 +1035,49 @@ def _daily_route_sequence_ranks(
         component_id_by_index,
     )
 
+
+
+
+def _remaining_sequence_component_proximity_km(
+    current_site: dict,
+    sites: List[dict],
+) -> Dict[object, float]:
+    """
+    Minimum straight-line distance from the current site to each remaining
+    stable sequencing component.
+
+    This is sequencing-only. It deliberately ignores strategic-cluster
+    preference so a genuinely nearby local area can be visited before a much
+    farther part of the current strategic cluster. Google still validates the
+    actual journey where required.
+    """
+    current_coordinate = _site_coordinate(current_site)
+    if current_coordinate is None:
+        return {}
+
+    result: Dict[object, float] = {}
+
+    for site in sites:
+        component_key = site.get("_sequence_component_key")
+        if component_key is None:
+            continue
+
+        site_coordinate = _site_coordinate(site)
+        if site_coordinate is None:
+            continue
+
+        distance = _coordinate_distance_between_points(
+            current_coordinate,
+            site_coordinate,
+        )
+        if distance is None:
+            continue
+
+        previous = result.get(component_key)
+        if previous is None or float(distance) < previous:
+            result[component_key] = float(distance)
+
+    return result
 
 
 def _remaining_cluster_proximity_km(
@@ -871,6 +1133,8 @@ def _select_google_groups_for_decision(
     route_site_rank: Dict[int, int],
     max_groups: int = GOOGLE_GROUPS_PER_DECISION,
     fallback_groups: int = GOOGLE_FALLBACK_GROUPS_PER_DECISION,
+    first_area_scores: Optional[Dict[str, float]] = None,
+    requested_areas: Optional[set] = None,
 ) -> List[dict]:
     """
     Choose the small set of disconnected local-group representatives that
@@ -885,7 +1149,8 @@ def _select_google_groups_for_decision(
       2) then prefer the geographically nearest next strategic cluster;
       3) reserve a couple of fallback groups so one infeasible cluster cannot
          prematurely end the day;
-      4) before the first survey, preserve existing shortlist/priority order.
+      4) before the first survey, compare area workload and home travel, with
+         requested-date areas taking priority.
     """
     groups = list(proximity_groups)
     if not groups:
@@ -922,9 +1187,26 @@ def _select_google_groups_for_decision(
         idx = int(group["representative_idx"])
         return int(route_site_rank.get(idx, 10**6))
 
-    # First survey: no home coordinates are stored in this scheduler, so retain
-    # strategic shortlist order but avoid sending the whole shortlist to Google.
+    # Compare productive working areas before choosing the first building.
     if current_site is None:
+        if first_area_scores is not None:
+            ordered = sorted(enumerate(groups), key=lambda item: (
+                0 if group_cluster(item[1]) in (requested_areas or set()) else 1,
+                -first_area_scores.get(group_cluster(item[1]), 0.0), item[0],
+            ))
+            selected, seen = [], set()
+            # Compare one entrance per working area before spending additional
+            # matrix slots on alternative entrances to the same area.
+            for _, group in ordered:
+                area = group_cluster(group)
+                if area not in seen:
+                    selected.append(group)
+                    seen.add(area)
+                if len(selected) == max_groups:
+                    return selected
+            selected_ids = {id(group) for group in selected}
+            selected.extend(group for _, group in ordered if id(group) not in selected_ids)
+            return selected[:max_groups]
         cluster_order = []
         by_cluster = {}
 
@@ -1447,15 +1729,19 @@ class DailyTransitScheduler:
         lunch_minutes: int = 30,
         lunch_window_start_clock=time(11, 45),
         lunch_latest_start_clock=time(13, 0),
+        minimum_survey_to_travel_ratio=FAR_CLUSTER_MIN_SURVEY_TO_TRAVEL_RATIO,
+        surveyor_name="",
     ):
-        self.router = router
+        self.router = router if isinstance(router, CachedRunRouter) else CachedRunRouter(router)
         self.home_location = home_location
+        self.surveyor_name = surveyor_name
         self.max_candidate_checks = max_candidate_checks
         self.same_postcode_transfer_minutes = same_postcode_transfer_minutes
         self.travel_leeway_minutes = travel_leeway_minutes
         self.pre_survey_buffer_minutes = pre_survey_buffer_minutes
         self.post_survey_buffer_minutes = post_survey_buffer_minutes
         self.ai_priority_weight_minutes = ai_priority_weight_minutes
+        self.minimum_survey_to_travel_ratio = float(minimum_survey_to_travel_ratio)
         self.lunch_minutes = lunch_minutes
         self.lunch_window_start_clock = lunch_window_start_clock
         self.lunch_latest_start_clock = lunch_latest_start_clock
@@ -1527,8 +1813,14 @@ class DailyTransitScheduler:
         first_survey_start: datetime,
         latest_survey_finish: datetime,
         latest_return: datetime,
+        *,
+        resume_from: Optional[DailyScheduleResult] = None,
+        resume_site: Optional[dict] = None,
+        local_continuation_only: bool = False,
     ) -> DailyScheduleResult:
-        remaining = [dict(site) for site in sites]
+        remaining = [dict(site) for site in sites
+                     if _site_allowed_today(site, first_survey_start.date())
+                     and _site_allowed_for_surveyor(site, self.surveyor_name)]
 
         # Stage 2 route-sequencing metadata only. This does not change Stage 1
         # cluster membership, eligibility, or the candidate sites supplied to
@@ -1536,6 +1828,10 @@ class DailyTransitScheduler:
         _assign_stable_sequence_component_keys(
             remaining,
             radius_km=NO_GOOGLE_RADIUS_KM,
+        )
+        _assign_retry_period_neighbourhood_preferences(
+            remaining,
+            radius_km=RETRY_PERIOD_GROUP_RADIUS_KM,
         )
 
         scheduled: List[ScheduledSurvey] = []
@@ -1549,6 +1845,7 @@ class DailyTransitScheduler:
             "coordinate_radius_bypasses": 0,
             "legacy_campus_bypasses": 0,
             "collapsed_nearby_destinations": 0,
+            "fallback_search_passes": 0,
         }
 
         current_location = self.home_location
@@ -1563,6 +1860,14 @@ class DailyTransitScheduler:
         # so A -> B -> A receives a strong re-entry penalty.
         last_sequence_component_key = None
         closed_sequence_component_keys = set()
+
+        # Road-level continuity sits inside the existing micro-cluster logic.
+        # Once a confidently identified road has been left, returning to that
+        # road later is strongly penalised. This prevents sequences such as
+        # Pember Road -> Warfield Road -> Pember Road when the remaining Pember
+        # sites could have been completed before leaving.
+        last_sequence_road_name = None
+        closed_sequence_road_names = set()
 
         # For the first leg, Google needs a departure time to price/rank transit.
         # Probe shortly before the requested first-survey start, then back-calculate
@@ -1587,6 +1892,36 @@ class DailyTransitScheduler:
             tzinfo=first_survey_start.tzinfo,
         )
 
+        if resume_from is not None and resume_from.items:
+            if resume_site is None:
+                raise ValueError("The last site's location is required when extending a day.")
+            scheduled = list(resume_from.items)
+            for key, value in (resume_from.routing_stats or {}).items():
+                routing_stats[key] = routing_stats.get(key, 0) + value
+            current_location = resume_site["route_location"]
+            current_postcode = resume_site.get("postcode", "")
+            current_building_name = resume_site.get("building_name", "")
+            current_latitude = resume_site.get("latitude")
+            current_longitude = resume_site.get("longitude")
+            current_planning_cluster = _planning_cluster_key(resume_site)
+            current_time = resume_from.return_departure
+            home_departure_time = resume_from.start_time
+            lunch_start, lunch_end = resume_from.lunch_start, resume_from.lunch_end
+            lunch_taken = lunch_start is not None
+            lunch_location = resume_from.lunch_location
+            lunch_after_sequence = resume_from.lunch_after_sequence
+            last_sequence_road_name = infer_road_name_from_building_name(current_building_name)
+            closed_sequence_road_names = {
+                infer_road_name_from_building_name(item.building_name) for item in scheduled[:-1]
+            } - {None, last_sequence_road_name}
+
+        # Rejected candidates are exhausted only at this location/time. Explore
+        # the next small Google batch before ending a day; never re-query an
+        # exhausted batch at the same state. A survey or lunch resets the state.
+        search_state = None
+        exhausted_indices = set()
+        lunch_blocked_candidate = False
+
         while remaining:
             # Take lunch at the first natural between-survey boundary from 11:45.
             # The break must START by 13:00. It is a hard constraint, not an AI
@@ -1606,6 +1941,32 @@ class DailyTransitScheduler:
             # be protected. Do not schedule additional work after missing lunch.
             if not lunch_taken and current_time > lunch_latest_start:
                 break
+            state = (len(scheduled), current_time)
+            if state != search_state:
+                search_state = state
+                exhausted_indices = set()
+                lunch_blocked_candidate = False
+            day_area_workloads = {}
+            first_area_scores = None
+            requested_areas = set()
+            if not scheduled:
+                work_start = max(first_survey_start, current_time)
+                work_window = max(0.0, (latest_survey_finish - work_start).total_seconds() / 60)
+                if not lunch_taken and latest_survey_finish >= lunch_window_start:
+                    work_window = max(0.0, work_window - self.lunch_minutes)
+                day_area_workloads = _day_area_workloads(
+                    remaining, work_window,
+                    self.pre_survey_buffer_minutes + self.post_survey_buffer_minutes,
+                )
+                first_area_scores = dict(day_area_workloads)
+                for site in remaining:
+                    area = _planning_cluster_key(site)
+                    home_minutes = site.get("home_to_cluster_minutes")
+                    if home_minutes is not None and math.isfinite(float(home_minutes)):
+                        first_area_scores[area] = day_area_workloads.get(area, 0.0) - 2 * float(home_minutes)
+                    preferred = site.get("special_request_date")
+                    if preferred is not None and not pd.isna(preferred) and pd.to_datetime(preferred).date() == first_survey_start.date():
+                        requested_areas.add(area)
             # Coordinate-first Google reduction.
             #
             # After the first site is reached, a remaining building is NOT sent
@@ -1664,6 +2025,15 @@ class DailyTransitScheduler:
                 for idx, site in enumerate(remaining)
             }
 
+            remaining_component_proximity = (
+                _remaining_sequence_component_proximity_km(
+                    current_site,
+                    remaining,
+                )
+                if scheduled
+                else {}
+            )
+
             remaining_cluster_proximity = (
                 _remaining_cluster_proximity_km(
                     current_site,
@@ -1674,6 +2044,8 @@ class DailyTransitScheduler:
             )
 
             for idx, site in enumerate(remaining):
+                if idx in exhausted_indices:
+                    continue
                 bypass = False
                 distance = None
                 bypass_reason = ""
@@ -1750,6 +2122,8 @@ class DailyTransitScheduler:
                 fallback_groups=(
                     GOOGLE_FALLBACK_GROUPS_PER_DECISION
                 ),
+                first_area_scores=first_area_scores,
+                requested_areas=requested_areas,
             )
 
             google_representative_indices = {
@@ -1784,6 +2158,8 @@ class DailyTransitScheduler:
                     google_destinations,
                     current_time,
                 )
+                if len(google_matrix) != len(google_groups):
+                    raise GoogleRoutesError("Google returned an incomplete routing matrix.")
 
                 for group, minutes in zip(
                     google_groups,
@@ -1803,7 +2179,7 @@ class DailyTransitScheduler:
                 # group nearest-next and favour a continuous same-road sequence.
                 cluster_tier = 0
                 next_cluster_distance_sort = float("inf")
-                local_group_tier = 1
+                local_group_tier = float("inf")
 
                 route_component_order = (
                     route_component_rank.get(idx, 10**6)
@@ -1817,13 +2193,37 @@ class DailyTransitScheduler:
                 )
 
                 component_key = current_component_keys.get(idx)
+
+                # Sequencing preference: after the current road/development is
+                # finished, favour the geographically nearest remaining local
+                # component. This can be in another strategic cluster; the
+                # normal Google and far-cluster feasibility checks still decide
+                # whether the move can actually be made.
+                if scheduled and component_key is not None:
+                    local_group_tier = (
+                        remaining_component_proximity.get(
+                            component_key,
+                            float("inf"),
+                        )
+                    )
+
+                candidate_road_name = (
+                    infer_road_name_from_building_name(
+                        site.get("building_name", "")
+                    )
+                )
+                component_reentry = (
+                    component_key is not None
+                    and component_key in closed_sequence_component_keys
+                )
+                road_reentry = (
+                    candidate_road_name is not None
+                    and candidate_road_name
+                    in closed_sequence_road_names
+                )
                 reentry_tier = (
                     1
-                    if (
-                        component_key is not None
-                        and component_key
-                        in closed_sequence_component_keys
-                    )
+                    if component_reentry or road_reentry
                     else 0
                 )
 
@@ -1831,6 +2231,8 @@ class DailyTransitScheduler:
                 local_distance_sort = float("inf")
                 postcode_tier = 0
                 google_representative_tier = 0
+                retry_period_mismatch = False
+                retry_weekday_mismatch = False
 
                 if scheduled:
                     next_cluster = str(
@@ -1863,7 +2265,6 @@ class DailyTransitScheduler:
                     )
 
                     if idx in connected_path_km:
-                        local_group_tier = 0
                         direct_distance = haversine_km(
                             current_latitude,
                             current_longitude,
@@ -1886,7 +2287,6 @@ class DailyTransitScheduler:
                             )
                         )
                         if direct_bypass:
-                            local_group_tier = 0
                             if direct_distance is not None:
                                 local_distance_sort = float(direct_distance)
                             if _same_confident_road(current_site, site):
@@ -1894,6 +2294,50 @@ class DailyTransitScheduler:
                 elif idx in google_group_member_indices:
                     google_representative_tier = (
                         0 if idx in google_representative_indices else 1
+                    )
+
+                # Retry morning/afternoon is a bounded SOFT preference. Nearby
+                # buildings inherit the revisit period, but geography still wins
+                # when forcing the period would create an inefficient detour.
+                group_period = _normalise_retry_period(
+                    site.get("_retry_group_preferred_period")
+                    or site.get("retry_preferred_period")
+                )
+                if group_period:
+                    if scheduled:
+                        estimated_leeway = self._site_to_site_leeway_minutes(
+                            current_site, site
+                        )
+                        estimated_start = current_time + timedelta(
+                            minutes=(
+                                float(minutes)
+                                + float(estimated_leeway)
+                                + float(self.pre_survey_buffer_minutes)
+                            )
+                        )
+                    else:
+                        estimated_start = first_survey_start
+
+                    retry_period_mismatch = (
+                        _time_period_for_datetime(estimated_start)
+                        != group_period
+                    )
+                    if (
+                        retry_period_mismatch
+                        and math.isfinite(float(local_group_tier))
+                    ):
+                        local_group_tier = (
+                            float(local_group_tier)
+                            + RETRY_PERIOD_MISMATCH_DISTANCE_PENALTY_KM
+                        )
+
+                preferred_weekdays = _retry_preferred_weekdays(
+                    site.get("retry_preferred_weekdays")
+                )
+                if preferred_weekdays:
+                    retry_weekday_mismatch = (
+                        first_survey_start.strftime("%A").lower()
+                        not in preferred_weekdays
                     )
 
                 # AI priority is advisory: Google transit remains dominant.
@@ -1946,6 +2390,16 @@ class DailyTransitScheduler:
                     - ai_adjustment
                     + defer_penalty
                     + special_request_adjustment
+                    + (
+                        RETRY_PERIOD_MISMATCH_SCORE_PENALTY_MINUTES
+                        if retry_period_mismatch
+                        else 0.0
+                    )
+                    + (
+                        RETRY_WEEKDAY_MISMATCH_SCORE_PENALTY_MINUTES
+                        if retry_weekday_mismatch
+                        else 0.0
+                    )
                 )
                 ranked.append(
                     (
@@ -1965,57 +2419,50 @@ class DailyTransitScheduler:
                     )
                 )
 
-            if not ranked:
-                break
-
-            # Finish the current strategic cluster first. Once it is exhausted,
-            # prefer the geographically nearest remaining assigned cluster, then
-            # let the existing Google travel data and feasibility rules validate
-            # the actual move.
+            # Route sequencing is local-first rather than strategic-cluster-first.
             #
-            # To preserve robustness, always keep up to two out-of-cluster
-            # fallback candidates in the feasibility pool. That means an
-            # impossible local job cannot prematurely end the day, while a
-            # distant hop cannot beat feasible nearby work merely because its
-            # transit time happens to be a few minutes shorter.
+            # Once the current road/development is finished, choose the nearest
+            # remaining local sequencing component by straight-line distance.
+            # Strategic-cluster membership remains a tie-break only. This prevents
+            # a distant part of the current strategic cluster from pulling the
+            # route past a much closer neighbouring area.
+            #
+            # Google still validates meaningful journeys, and the existing
+            # >=30-minute / 2:1 survey-to-travel efficiency gate applies to
+            # every substantial move, regardless of strategic-cluster labels.
             ranked.sort(
                 key=lambda x: (
-                    x[0],  # finish current strategic cluster first
-                    x[1],  # then move to the nearest next strategic cluster
-                    x[2],  # finish connected local group first
-                    x[3],  # strongly penalise A -> B -> A re-entry
-                    x[4],  # optimised micro-cluster order
-                    x[5],  # optimised site order within micro-cluster
-                    x[6],  # same-road continuity
+                    x[3],  # avoid component/road A -> B -> A re-entry
+                    x[6],  # finish the current confident road before leaving it
+                    x[2],  # nearest remaining local component
+                    x[0],  # current strategic cluster only as a tie-break
+                    x[1],  # then nearest strategic-cluster proximity
+                    x[4],  # existing optimised micro-cluster order
+                    x[5],  # existing optimised site order
                     x[7],  # nearest-next coordinate distance
                     x[8],  # same full postcode
                     x[9],  # Google representative before group members
                     x[10], # existing Google/AI/special-request score
                 )
             )
+            if not scheduled:
+                ranked.sort(key=lambda row: (
+                    0 if _planning_cluster_key(remaining[row[11]]) in requested_areas else 1,
+                    -(day_area_workloads.get(_planning_cluster_key(remaining[row[11]]), 0.0)
+                      - 2 * (row[12] + self.travel_leeway_minutes)),
+                    row[9], row[10], row[11],
+                ))
 
-            if scheduled:
-                same_cluster = [r for r in ranked if r[0] == 0]
-                other_cluster = [r for r in ranked if r[0] != 0]
-
-                fallback_slots = (
-                    min(2, len(other_cluster))
-                    if same_cluster
-                    else min(self.max_candidate_checks, len(other_cluster))
-                )
-                local_slots = max(
-                    0,
-                    self.max_candidate_checks - fallback_slots,
-                )
-                candidate_pool = (
-                    same_cluster[:local_slots]
-                    + other_cluster[:fallback_slots]
-                )
-            else:
-                candidate_pool = ranked[:self.max_candidate_checks]
+            # Do not rebuild the feasibility pool by strategic cluster after the
+            # local-first sort; doing so would undo the sequencing decision above.
+            # Check all already-routed candidates, not just the first eight.
+            # Cheap duration/lunch checks still precede return-home routing.
+            # max_candidate_checks is retained in the constructor for callers
+            # using the old API; Google group batches remain bounded separately.
+            candidate_pool = ranked
 
             chosen = None
-            lunch_blocked_candidate = False
+            approved_block = None
 
             for (
                 _,
@@ -2035,13 +2482,17 @@ class DailyTransitScheduler:
                 site = remaining[idx]
 
                 is_first_survey = len(scheduled) == 0
+                first_site_start = max(first_survey_start, current_time)
+                earliest_start = first_site_start if is_first_survey else current_time
+                if earliest_start + timedelta(minutes=float(site["planning_minutes"])) > latest_survey_finish:
+                    continue
 
                 if is_first_survey:
                     # Back-calculate home departure so the first survey begins at
                     # the selected target rather than after an arbitrary fixed
                     # "leave home" time. Use one exact Compute Routes call only for
                     # the shortlisted candidate being feasibility-tested.
-                    estimated_departure = first_survey_start - timedelta(
+                    estimated_departure = first_site_start - timedelta(
                         minutes=(
                             travel_minutes
                             + self.travel_leeway_minutes
@@ -2054,7 +2505,7 @@ class DailyTransitScheduler:
                             site["route_location"],
                             estimated_departure,
                         )
-                    except Exception:
+                    except GoogleNoRouteError:
                         continue
 
                     buffered_travel_minutes = (
@@ -2065,7 +2516,7 @@ class DailyTransitScheduler:
                     # the exact route duration we just received so the first
                     # survey starts at the selected time rather than merely
                     # "not before" it. This does not add another Google call.
-                    depart_previous = first_survey_start - timedelta(
+                    depart_previous = first_site_start - timedelta(
                         minutes=(
                             buffered_travel_minutes
                             + self.pre_survey_buffer_minutes
@@ -2074,7 +2525,7 @@ class DailyTransitScheduler:
                     arrive = depart_previous + timedelta(
                         minutes=buffered_travel_minutes
                     )
-                    survey_start = first_survey_start
+                    survey_start = first_site_start
                 else:
                     site_to_site_leeway = self._site_to_site_leeway_minutes(
                         current_site, site
@@ -2088,76 +2539,31 @@ class DailyTransitScheduler:
                         minutes=self.pre_survey_buffer_minutes
                     )
 
-                # Efficiency gate for FAR moves between strategic clusters only.
-                #
-                # This does not affect:
-                #   - work inside the current strategic cluster;
-                #   - local/short cluster changes under 30 minutes;
-                #   - candidate ranking;
-                #   - Google journey times;
-                #   - any existing hard feasibility rule.
-                #
-                # "Feasible survey minutes" is the remaining survey workload in
-                # the destination cluster, capped by the survey-time window still
-                # available after arriving there. The existing detailed scheduler
-                # continues to validate every individual survey and the return
-                # journey home afterwards.
-                if not is_first_survey and current_planning_cluster:
-                    target_cluster = _planning_cluster_key(site)
-                    is_inter_cluster_jump = (
-                        target_cluster
-                        and target_cluster
-                        != current_planning_cluster
-                    )
-
-                    if (
-                        is_inter_cluster_jump
-                        and float(travel_minutes)
-                        >= FAR_CLUSTER_TRANSITION_MINUTES
+                # Every substantial site-to-site journey is checked, even
+                # inside the same strategic cluster. Proof routes cannot make
+                # another substantial move to inflate their claimed workload.
+                substantial_move = (
+                    not is_first_survey
+                    and buffered_travel_minutes >= FAR_CLUSTER_TRANSITION_MINUTES
+                )
+                if substantial_move and local_continuation_only:
+                    continue
+                # Final day filling accepts any positive survey work that fits.
+                # It must also be free to make another long move afterwards;
+                # the local productivity-proof route would otherwise stop it.
+                needs_work_proof = substantial_move and self.minimum_survey_to_travel_ratio > 0
+                proof_candidates = []
+                if needs_work_proof:
+                    proof_candidates = _local_work_candidates(site, remaining)
+                    potential_work = sum(float(s["planning_minutes"]) for s in proof_candidates)
+                    available_work = max(0.0, (latest_survey_finish - survey_start).total_seconds() / 60)
+                    if not lunch_taken and latest_survey_finish >= lunch_window_start:
+                        available_work = max(0.0, available_work - self.lunch_minutes)
+                    if not _far_cluster_transition_is_efficient(
+                        buffered_travel_minutes, min(potential_work, available_work),
+                        minimum_ratio=self.minimum_survey_to_travel_ratio
                     ):
-                        destination_work_minutes = (
-                            _remaining_cluster_survey_minutes(
-                                remaining,
-                                target_cluster,
-                                first_survey_start.date(),
-                            )
-                        )
-
-                        remaining_survey_window_minutes = max(
-                            0.0,
-                            (
-                                latest_survey_finish
-                                - survey_start
-                            ).total_seconds()
-                            / 60.0,
-                        )
-
-                        # If lunch is still due during the remaining survey
-                        # window, do not count those protected 30 minutes as
-                        # productive survey capacity for this ratio.
-                        if (
-                            not lunch_taken
-                            and survey_start <= lunch_latest_start
-                            and latest_survey_finish > lunch_window_start
-                        ):
-                            remaining_survey_window_minutes = max(
-                                0.0,
-                                remaining_survey_window_minutes
-                                - float(self.lunch_minutes),
-                            )
-
-                        feasible_destination_survey_minutes = min(
-                            destination_work_minutes,
-                            remaining_survey_window_minutes,
-                        )
-
-                        if not _far_cluster_transition_is_efficient(
-                            travel_minutes=travel_minutes,
-                            feasible_survey_minutes=(
-                                feasible_destination_survey_minutes
-                            ),
-                        ):
-                            continue
+                        continue
 
                 survey_end = survey_start + timedelta(
                     minutes=float(site["planning_minutes"])
@@ -2207,7 +2613,7 @@ class DailyTransitScheduler:
                         self.home_location,
                         return_departure_for_check,
                     )
-                except Exception:
+                except GoogleNoRouteError:
                     continue
 
                 return_time = return_departure_for_check + timedelta(
@@ -2216,6 +2622,43 @@ class DailyTransitScheduler:
                 )
 
                 if return_time <= latest_return:
+                    if needs_work_proof:
+                        first_item = ScheduledSurvey(
+                            sequence=len(scheduled) + 1,
+                            customer_reference=str(site.get("customer_reference", "")),
+                            building_name=str(site.get("building_name", "")),
+                            postcode=str(site.get("postcode", "")), cluster=_planning_cluster_key(site),
+                            depart_previous=depart_previous, travel_minutes=buffered_travel_minutes,
+                            arrive_site=arrive, survey_minutes=float(site["planning_minutes"]),
+                            survey_start=survey_start, survey_end=survey_end,
+                            predicted_minutes=float(site["predicted_minutes"]),
+                            confidence=str(site.get("confidence", "")), model_used=str(site.get("model_used", "")),
+                            building_height=site.get("building_height"), flats=site.get("flats"),
+                            ground_floor_area=site.get("ground_floor_area"),
+                        )
+                        prefix = DailyScheduleResult(
+                            items=scheduled + [first_item], start_location=self.home_location,
+                            start_time=home_departure_time, return_location=self.home_location,
+                            return_departure=ready_to_leave,
+                            return_travel_minutes=float(return_route.duration_minutes) + self.travel_leeway_minutes,
+                            return_time=return_time, latest_return=latest_return,
+                            unscheduled_count=0, first_survey_target=first_survey_start,
+                            latest_survey_finish=latest_survey_finish,
+                            lunch_start=lunch_start, lunch_end=lunch_end,
+                            lunch_location=lunch_location, lunch_after_sequence=lunch_after_sequence,
+                        )
+                        proof = self.build_day(
+                            [candidate for candidate in proof_candidates if candidate is not site],
+                            first_survey_start, latest_survey_finish, latest_return,
+                            resume_from=prefix, resume_site=site, local_continuation_only=True,
+                        )
+                        achieved_work = sum(item.survey_minutes for item in proof.items[len(scheduled):])
+                        if (proof.return_time > latest_return
+                                or not _far_cluster_transition_is_efficient(buffered_travel_minutes, achieved_work, minimum_ratio=self.minimum_survey_to_travel_ratio)):
+                            continue
+                        # Commit the proven local block together, so subsequent
+                        # greedy choices cannot discard the work justifying it.
+                        approved_block = proof
                     chosen = (
                         idx,
                         site,
@@ -2229,6 +2672,10 @@ class DailyTransitScheduler:
                     break
 
             if chosen is None:
+                exhausted_indices.update(travel_by_index)
+                if len(exhausted_indices) < len(remaining):
+                    routing_stats["fallback_search_passes"] += 1
+                    continue
                 # All otherwise-attractive candidates would cause lunch to be
                 # missed. Reserve lunch at 11:45, then re-run routing at 12:15.
                 if (
@@ -2244,6 +2691,40 @@ class DailyTransitScheduler:
                     lunch_taken = True
                     continue
                 break
+
+            if approved_block is not None:
+                new_items = approved_block.items[len(scheduled):]
+                by_identity = {_site_identity_for_sequence(site): site for site in remaining}
+                last = new_items[-1]
+                last_key = _site_identity_for_sequence(vars(last))
+                last_site = by_identity[last_key]
+                used = {_site_identity_for_sequence(vars(item)) for item in new_items}
+                for item in new_items:
+                    component = by_identity[_site_identity_for_sequence(vars(item))].get("_sequence_component_key")
+                    if last_sequence_component_key is not None and component != last_sequence_component_key:
+                        closed_sequence_component_keys.add(last_sequence_component_key)
+                    last_sequence_component_key = component
+                remaining = [site for site in remaining if _site_identity_for_sequence(site) not in used]
+                scheduled = list(approved_block.items)
+                current_location = last_site["route_location"]
+                current_postcode, current_building_name = last.postcode, last.building_name
+                current_latitude, current_longitude = last_site.get("latitude"), last_site.get("longitude")
+                current_planning_cluster = _planning_cluster_key(last_site)
+                current_sequence_component_key = last_site.get("_sequence_component_key")
+                last_sequence_component_key = current_sequence_component_key
+                closed_sequence_road_names.update(
+                    infer_road_name_from_building_name(item.building_name) for item in scheduled[:-1]
+                )
+                last_sequence_road_name = infer_road_name_from_building_name(last.building_name)
+                closed_sequence_road_names.discard(last_sequence_road_name)
+                closed_sequence_road_names.discard(None)
+                current_time = approved_block.return_departure
+                lunch_start, lunch_end = approved_block.lunch_start, approved_block.lunch_end
+                lunch_taken = lunch_start is not None
+                lunch_location, lunch_after_sequence = approved_block.lunch_location, approved_block.lunch_after_sequence
+                for key, value in (approved_block.routing_stats or {}).items():
+                    routing_stats[key] = routing_stats.get(key, 0) + value
+                continue
 
             (
                 idx,
@@ -2311,6 +2792,18 @@ class DailyTransitScheduler:
                 last_sequence_component_key = chosen_component_key
                 current_sequence_component_key = chosen_component_key
 
+            chosen_road_name = infer_road_name_from_building_name(
+                site.get("building_name", "")
+            )
+            if (
+                last_sequence_road_name is not None
+                and chosen_road_name != last_sequence_road_name
+            ):
+                closed_sequence_road_names.add(
+                    last_sequence_road_name
+                )
+            last_sequence_road_name = chosen_road_name
+
             remaining.pop(idx)
 
         # If the final survey finishes during the lunch window, take the break
@@ -2371,6 +2864,7 @@ class DailyTransitScheduler:
         latest_survey_finish_clock,
         latest_return_clock,
         timezone,
+        saturday_time_window=None,
     ) -> WeeklyScheduleResult:
         """
         Build a multi-day schedule.
@@ -2382,31 +2876,74 @@ class DailyTransitScheduler:
         remaining = [dict(site) for site in sites]
         days: List[DailyScheduleResult] = []
 
-        for day_date in dates:
+        # Try requested retry days before other days can consume their sites.
+        # A dedicated first pass also keeps geographic ranking from burying a
+        # requested retry underneath a full day of ordinary work.
+        remaining = [site for site in remaining if _site_allowed_for_surveyor(site, self.surveyor_name)]
+        pending_dates = sorted(set(dates), key=lambda d: (
+            not any(_requested_retry_day(site, d) for site in remaining), d))
+        for day_date in list(pending_dates):
+            pending_dates.remove(day_date)
             if not remaining:
                 break
 
+            first_clock, finish_clock, return_clock = survey_clocks_for_date(
+                day_date, first_survey_start_clock, latest_survey_finish_clock,
+                latest_return_clock, saturday_time_window,
+            )
             first_survey_dt = datetime.combine(
                 day_date,
-                first_survey_start_clock,
+                first_clock,
                 tzinfo=timezone,
             )
             latest_survey_finish_dt = datetime.combine(
                 day_date,
-                latest_survey_finish_clock,
+                finish_clock,
                 tzinfo=timezone,
             )
             return_deadline_dt = datetime.combine(
                 day_date,
-                latest_return_clock,
+                return_clock,
                 tzinfo=timezone,
             )
 
+            # No-answer retries and known access days are hard exclusions.
+            # Filter before build_day so forbidden retries do not create Google
+            # routing calls on that date. They remain in the weekly candidate
+            # pool for the later available dates.
+            day_sites = [
+                site
+                for site in remaining
+                if _site_allowed_today(site, day_date)
+                and (_requested_retry_day(site, day_date)
+                     or not any(_requested_retry_day(site, later) for later in pending_dates))
+            ]
+            if not day_sites:
+                continue
+
+            priority_sites = [site for site in day_sites if _requested_retry_day(site, day_date)]
+            priority_result = None
+            if priority_sites:
+                old_ratio = self.minimum_survey_to_travel_ratio
+                try:
+                    self.minimum_survey_to_travel_ratio = 0.0
+                    priority_result = self.build_day(
+                        priority_sites, first_survey_dt,
+                        latest_survey_finish_dt, return_deadline_dt)
+                finally:
+                    self.minimum_survey_to_travel_ratio = old_ratio
+            prefix = priority_result if priority_result and priority_result.items else None
+            placed = {_site_identity_for_sequence(vars(item)) for item in prefix.items} if prefix else set()
+            resume_site = next((site for site in day_sites
+                                if prefix and _site_identity_for_sequence(site)
+                                == _site_identity_for_sequence(vars(prefix.items[-1]))), None)
             day_result = self.build_day(
-                sites=remaining,
+                sites=[site for site in day_sites if _site_identity_for_sequence(site) not in placed],
                 first_survey_start=first_survey_dt,
                 latest_survey_finish=latest_survey_finish_dt,
                 latest_return=return_deadline_dt,
+                resume_from=prefix,
+                resume_site=resume_site,
             )
             days.append(day_result)
 
@@ -2440,7 +2977,6 @@ class DailyTransitScheduler:
             remaining = new_remaining
 
         return WeeklyScheduleResult(
-            days=days,
+            days=sorted(days, key=lambda day: day.first_survey_target or day.start_time),
             unscheduled_sites=remaining,
         )
-

@@ -1,0 +1,102 @@
+SITE SURVEY SCHEDULING AGENT
+Current application: 20.12.10
+Updated: 9 October 2026
+
+START HERE
+
+Use app.py as the entry point. Run these commands from the project folder:
+
+    python -m pip install -r requirements.txt
+    python -m streamlit run app.py
+
+Use Python 3.10 or newer. Provide completed-survey training through the sidebar
+or as Predictive Model.xlsx beside app.py. Configure API keys through environment
+variables or .streamlit/secrets.toml; see README.md for names and optional features.
+
+The application should display Version 20.12.10. The active route engine remains
+scheduler_v20_10.py; its filename is not the application's release number.
+
+UPDATING AN EXISTING INSTALLATION
+
+Stop Streamlit completely before replacing matching project files, then restart.
+Keep exact Python filenames so imports work. Keep your training data and secrets.
+For a hosted Streamlit app, deploy the matching files and reboot the application.
+
+The v20.12.10 ZIP is an incremental update to v20.12.9. Install the preceding
+v20.12.9 update first if needed, then extract this ZIP into the
+existing project folder, replacing the matching files and keeping its tests/
+subfolder. It contains only changed files, not a complete installation.
+All earlier modules, requirements, training data and credentials are still needed.
+
+Replace app.py, team_scheduler.py and scheduler_v20_10.py together, then fully
+restart Streamlit. Retain the retry/access modules supplied with v20.12.9.
+Mixing old and new modules can cause unexpected-keyword/import errors.
+
+If you see:
+    fill_team_gaps() got an unexpected keyword argument 'expand_underfilled_days'
+
+the new app is loading an older team_scheduler.py, either from disk or from
+memory. The same applies to an unexpected 'saturday_time_window' or
+'surveyor_name' argument after this
+update. Stop the running process with Ctrl+C, confirm the updated module is in
+the same project folder as app.py, and restart. A browser refresh is insufficient.
+
+NEW IN 20.12.10
+
+The Saturday hours section has separate first-survey-start, last-survey-finish
+and return-home dropdowns. Defaults are 10:00 / 13:00 / 14:00; adjust all three
+to suit the half day. Tick Saturday in the availability table for each person
+working it. Saturday remains restricted to cannot-complete retries.
+
+These Saturday times apply during initial planning, requested-day priority,
+weekly-note reroutes and final gap filling. Monday-Friday retain their original
+hours. Existing lunch, travel, access and booking checks still apply.
+Capacity Review uses the actual shorter window; Run Settings records the times.
+
+RETAINED FROM 20.12.9
+
+Requested retry weekdays receive first priority in allocation, weekly routing
+and final gap filling. Soft suggestions may fall back if they cannot be used;
+explicit access-only days remain mandatory. Inspect Retry Day Assignments and
+Requested Day Honoured? in Retry Decisions to see the result.
+
+Saturday is an optional availability checkbox, off by default. Tick it for
+people who will work that day. Only cannot-complete retries can go on Saturday.
+
+The 9 October operational review reopens unresolved second/latest failed visits
+by Harrison Grice and latest access-refusal failures recorded by Joe Reynolds
+or Harrison Grice through that date. Another surveyor performs the revisit.
+Original failure counts stay intact. A later failure returns to normal triage.
+Completed work, existing booking exclusions and replacement-SA checks still apply.
+
+Upload a fresh cannot-completes workbook with Resource Name and visit dates
+linked to each failed Service Appointment ID. Names on new appointments do not
+identify the failed-visit surveyor. Incomplete evidence is reported rather than
+used to infer an exception. The standalone access report includes this evidence.
+
+CURRENT FILLING BEHAVIOUR
+
+Nearby work is tried first, including the normal 15 km search. If at least
+30 minutes remain before the survey cut-off, the final pass tries remaining
+eligible buildings without a distance limit. Final filling has no minimum
+survey-to-travel ratio; initial planning retains its efficiency preference.
+
+Access, booking, completed-work, lunch, survey-finish and return-home checks
+remain enforced. Existing visits are preserved. The wider search can increase
+routing requests and run time; it cannot guarantee every day will be full.
+
+Use Day Filling Review, Gap Filling, Capacity Review and Unplaced Eligible to
+inspect what was tried and which work remains. Gap Filling appears when visits
+were added. The separate cannot-completes access report remains available.
+
+CHECKS AND DOCUMENTATION
+
+With dependencies installed:
+    python -m unittest discover -s tests -v
+
+The v20.12.10 update passed 140 offline regression tests, including ten new
+Saturday-hours cases, plus syntax checks. That run excluded the
+Streamlit booking-selector UI tests and made no live routing or AI calls.
+
+README.md explains the project, current rules, inputs, outputs and setup.
+CHANGELOG.md summarises recent changes. No dependencies have been added.
